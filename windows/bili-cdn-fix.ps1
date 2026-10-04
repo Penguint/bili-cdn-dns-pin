@@ -1,18 +1,19 @@
 # ============================================================
 # Bilibili overseas CDN fix - hosts optimizer
-# Tests latency to known Bilibili overseas CDN node IPs and
+# Tests download throughput to known Bilibili overseas CDN node IPs and
 # pins the fastest one in the Windows hosts file.
 # Run:     right-click -> "Run with PowerShell" (auto-elevates)
 # Undo:    powershell -File bili-cdn-fix.ps1 -Restore
 # ============================================================
-param([switch]$Restore)
+param([switch]$Restore, [switch]$DryRun)
 
 $Marker = "# BiliCdnFix"
+if ($env:BILI_DRY_RUN -eq "1") { $DryRun = $true }
 $HostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
 
 # --- self-elevate to admin ---
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
+if (-not $isAdmin -and -not $DryRun) {
     $argList = "-ExecutionPolicy Bypass -NoExit -File `"$PSCommandPath`""
     if ($Restore) { $argList += " -Restore" }
     Start-Process powershell -ArgumentList $argList -Verb RunAs
@@ -23,6 +24,7 @@ function Flush-Dns { ipconfig /flushdns | Out-Null }
 
 # --- restore mode: remove our entries and exit ---
 if ($Restore) {
+    if ($DryRun) { Write-Host "Dry run: hosts unchanged"; return }
     $lines = @(Get-Content $HostsPath | Where-Object { $_ -notmatch [regex]::Escape($Marker) })
     Set-Content -Path $HostsPath -Value $lines -Encoding Default
     Flush-Dns
@@ -58,51 +60,35 @@ $Domains = @{
     )
 }
 
-# add IPs from live DNS resolution as extra candidates
+# --- video/audio download throughput test ---
+. (Join-Path $PSScriptRoot '..\common\download-speed.ps1')
+Initialize-Speed
+$Domains['upos-sz-mirrorcosov.bilivideo.com'] = @()
+if ($env:BILI_DRY_RUN -eq '1') { $DryRun = $true }
+
+
 foreach ($d in @($Domains.Keys)) {
-    try {
-        $resolved = (Resolve-DnsName -Name $d -Type A -ErrorAction Stop).IPAddress
-        $Domains[$d] = @($Domains[$d] + $resolved | Select-Object -Unique)
-    } catch {}
+    $Domains[$d] = @($Domains[$d] + (Get-FreshCandidates $d) | Select-Object -Unique)
 }
-
-# --- TCP connect latency test (port 443) ---
-function Test-IpLatency {
-    param([string]$Ip, [int]$TimeoutMs = 900, [int]$Tries = 2)
-    $best = [int]::MaxValue
-    for ($i = 0; $i -lt $Tries; $i++) {
-        $client = New-Object System.Net.Sockets.TcpClient
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        try {
-            $task = $client.ConnectAsync($Ip, 443)
-            if ($task.Wait($TimeoutMs) -and $client.Connected) {
-                $sw.Stop()
-                if ($sw.ElapsedMilliseconds -lt $best) { $best = $sw.ElapsedMilliseconds }
-            }
-        } catch {} finally { $client.Close() }
-    }
-    if ($best -eq [int]::MaxValue) { return $null } else { return $best }
-}
-
 $results = @{}
 foreach ($domain in $Domains.Keys) {
     Write-Host "`nTesting nodes for $domain ..." -ForegroundColor Cyan
-    $bestIp = $null; $bestMs = [int]::MaxValue
+    $bestIp = $null; $bestSpeed = 0
     $ips = $Domains[$domain]; $n = 0
     foreach ($ip in $ips) {
         $n++
         Write-Progress -Activity $domain -Status "$ip ($n/$($ips.Count))" -PercentComplete (100*$n/$ips.Count)
-        $ms = Test-IpLatency -Ip $ip
-        if ($ms -ne $null) {
-            $color = if ($ms -lt 60) { "Green" } elseif ($ms -lt 150) { "Yellow" } else { "DarkGray" }
-            Write-Host ("  {0,-16} {1,5} ms" -f $ip, $ms) -ForegroundColor $color
-            if ($ms -lt $bestMs) { $bestMs = $ms; $bestIp = $ip }
+        $speed = Test-IpSpeed -Domain $domain -Ip $ip
+        if ($speed -ne $null) {
+            $color = "Green"
+            Write-Host ("  {0,-16} {1,9} bytes/s" -f $ip, $speed) -ForegroundColor $color
+            if ($speed -gt $bestSpeed) { $bestSpeed = $speed; $bestIp = $ip }
         }
     }
     Write-Progress -Activity $domain -Completed
     if ($bestIp) {
-        $results[$domain] = @{ Ip = $bestIp; Ms = $bestMs }
-        Write-Host ("  BEST: {0}  {1} ms" -f $bestIp, $bestMs) -ForegroundColor Green
+        $results[$domain] = @{ Ip = $bestIp; Speed = $bestSpeed }
+        Write-Host ("  BEST: {0}  {1} bytes/s" -f $bestIp, $bestSpeed) -ForegroundColor Green
     } else {
         Write-Host "  No reachable node found, skipping this domain." -ForegroundColor Red
     }
@@ -113,14 +99,16 @@ if ($results.Count -eq 0) {
     return
 }
 
+if ($DryRun) { Write-Host "Dry run: hosts unchanged."; return }
+
 # --- update hosts (backup first, remove old entries, append new) ---
 Copy-Item $HostsPath "$HostsPath.bak_$(Get-Date -Format yyyyMMdd_HHmmss)" -Force
-$domainPattern = ($Domains.Keys | ForEach-Object { [regex]::Escape($_) }) -join "|"
+$domainPattern = ($results.Keys | ForEach-Object { [regex]::Escape($_) }) -join "|"
 $lines = @(Get-Content $HostsPath | Where-Object {
-    $_ -notmatch [regex]::Escape($Marker) -and $_ -notmatch $domainPattern
+    $_ -notmatch ("(?i)\s(?:" + $domainPattern + ")(?:\s|$)")
 })
 foreach ($domain in $results.Keys) {
-    $lines += ("{0} {1} {2} ({3} ms, {4})" -f $results[$domain].Ip, $domain, $Marker, $results[$domain].Ms, (Get-Date -Format yyyy-MM-dd))
+    $lines += ("{0} {1} {2} ({3} bytes/s, {4})" -f $results[$domain].Ip, $domain, $Marker, $results[$domain].Speed, (Get-Date -Format yyyy-MM-dd))
 }
 # retry a few times in case antivirus/another process has the file locked
 $written = $false
@@ -145,7 +133,7 @@ Flush-Dns
 
 Write-Host "`nDone! hosts updated:" -ForegroundColor Green
 foreach ($domain in $results.Keys) {
-    Write-Host ("  {0} -> {1} ({2} ms)" -f $domain, $results[$domain].Ip, $results[$domain].Ms)
+    Write-Host ("  {0} -> {1} ({2} bytes/s)" -f $domain, $results[$domain].Ip, $results[$domain].Speed)
 }
 Write-Host "`nA backup of your old hosts file was saved next to it."
 Write-Host "Re-run this script anytime to re-test; run with -Restore to undo."

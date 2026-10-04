@@ -2,8 +2,10 @@
 # bili-agh-update.ps1 (Windows always-on server mode)
 # Test bilibili overseas CDN nodes, update AdGuard Home DNS
 # rewrites via API. Schedule weekly with Task Scheduler.
-# Stability rule: keep current IP unless dead or >60ms.
+# Stability rule: keep current IP unless media downloads fail or throughput drops.
 # ============================================================
+
+param([switch]$DryRun)
 
 # ------- EDIT THESE 3 LINES -------
 $AghUrl  = "http://127.0.0.1:80"   # AdGuard Home admin address
@@ -11,7 +13,7 @@ $AghUser = "admin"
 $AghPass = "CHANGE_ME"
 # ----------------------------------
 
-$KeepThresholdMs = 60
+$KeepThresholdBps = 5000000
 $StateFile = Join-Path $PSScriptRoot "bili-agh-state.txt"
 $AuthHeader = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${AghUser}:${AghPass}")) }
 
@@ -32,22 +34,11 @@ $Domains = @{
     )
 }
 
-function Test-IpLatency {
-    param([string]$Ip, [int]$TimeoutMs = 2000, [int]$Tries = 2)
-    $best = $null
-    for ($i = 0; $i -lt $Tries; $i++) {
-        $client = New-Object System.Net.Sockets.TcpClient
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        try {
-            $task = $client.ConnectAsync($Ip, 443)
-            if ($task.Wait($TimeoutMs) -and $client.Connected) {
-                $sw.Stop()
-                if ($best -eq $null -or $sw.ElapsedMilliseconds -lt $best) { $best = $sw.ElapsedMilliseconds }
-            }
-        } catch {} finally { $client.Close() }
-    }
-    return $best
-}
+. (Join-Path $PSScriptRoot '..\common\download-speed.ps1')
+Initialize-Speed
+$Domains['upos-sz-mirrorcosov.bilivideo.com'] = @()
+if ($env:BILI_DRY_RUN -eq '1') { $DryRun = $true }
+
 
 function Get-State($domain) {
     if (Test-Path $StateFile) {
@@ -80,9 +71,9 @@ foreach ($domain in $Domains.Keys) {
     $oldIp = Get-State $domain
 
     if ($oldIp) {
-        $oldMs = Test-IpLatency -Ip $oldIp
-        if ($oldMs -ne $null -and $oldMs -le $KeepThresholdMs) {
-            Log "current $oldIp still good (${oldMs}ms) - keeping"
+        $oldSpeed = Test-IpSpeed -Domain $domain -Ip $oldIp
+        if ($oldSpeed -ne $null -and $oldSpeed -ge $KeepThresholdBps) {
+            Log "current $oldIp still good (${oldSpeed} bytes/s) - keeping"
             continue
         }
         Log "current $oldIp slow or dead - re-testing"
@@ -90,27 +81,27 @@ foreach ($domain in $Domains.Keys) {
 
     # candidates: static list + fresh public-DNS resolution (bypasses AdGuard rewrite)
     $ips = $Domains[$domain]
-    foreach ($dns in "1.1.1.1", "8.8.8.8") {
-        try { $ips += (Resolve-DnsName -Name $domain -Type A -Server $dns -ErrorAction Stop).IPAddress } catch {}
-    }
+    $ips += Get-FreshCandidates $domain
     $ips = $ips | Select-Object -Unique
 
-    $bestIp = $null; $bestMs = [int]::MaxValue
+    $bestIp = $null; $bestSpeed = 0
     foreach ($ip in $ips) {
-        $ms = Test-IpLatency -Ip $ip
-        if ($ms -ne $null) {
-            Log ("  {0,-16} {1,5} ms" -f $ip, $ms)
-            if ($ms -lt $bestMs) { $bestMs = $ms; $bestIp = $ip }
+        $speed = Test-IpSpeed -Domain $domain -Ip $ip
+        if ($speed -ne $null) {
+            Log ("  {0,-16} {1,9} bytes/s" -f $ip, $speed)
+            if ($speed -gt $bestSpeed) { $bestSpeed = $speed; $bestIp = $ip }
         }
     }
 
     if (-not $bestIp) { Log "no reachable node, unchanged"; continue }
     if ($bestIp -eq $oldIp) { Log "best unchanged ($bestIp)"; continue }
 
-    if ($oldIp) { Agh "delete" $domain $oldIp | Out-Null }
+    if ($DryRun) { Log "WOULD PIN: $domain -> $bestIp ($bestSpeed bytes/s)"; continue }
+
+    if ($oldIp -and -not (Agh "delete" $domain $oldIp)) { Log "Delete failed, leaving state unchanged"; continue }
     if (Agh "add" $domain $bestIp) {
         Set-State $domain $bestIp
-        Log "NEW rewrite: $domain -> $bestIp (${bestMs}ms)"
-    }
+        Log "NEW rewrite: $domain -> $bestIp (${bestSpeed} bytes/s)"
+    } elseif ($oldIp) { Agh "add" $domain $oldIp | Out-Null }
 }
 Log "done"

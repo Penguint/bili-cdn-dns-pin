@@ -4,7 +4,7 @@
 # Generic always-on server (Synology / macOS / Debian):
 # test bilibili overseas CDN nodes, pin the fastest IP into
 # AdGuard Home DNS rewrites. Run weekly via cron/Task Scheduler.
-# Stability rule: keep current IP unless it is dead or >60ms.
+# Stability rule: keep current IP unless media downloads fail or drop below the throughput threshold.
 # ============================================================
 
 # ------- EDIT THESE 3 LINES -------
@@ -13,10 +13,10 @@ AGH_USER="admin"                   # AdGuard Home login
 AGH_PASS="CHANGE_ME"               # AdGuard Home password
 # ----------------------------------
 
-KEEP_THRESHOLD_MS=60               # keep current node if still faster than this
+KEEP_THRESHOLD_BPS=${BILI_KEEP_BPS:-5000000}               # keep current node if both media medians reach this bytes/s threshold
 ROUTER_DNS=""                      # optional: router IP whose static DNS entries must stay in sync (empty = skip check)
 STATE_FILE="$(cd "$(dirname "$0")" && pwd)/bili-agh-state.txt"
-DOMAINS="upos-hz-mirrorakam.akamaized.net upos-sz-mirroraliov.bilivideo.com"
+DOMAINS=${BILI_DOMAINS:-"upos-hz-mirrorakam.akamaized.net upos-sz-mirroraliov.bilivideo.com upos-sz-mirrorcosov.bilivideo.com"}
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -26,25 +26,15 @@ candidates_for() {
         echo "23.48.96.104 23.48.96.113 203.153.17.248 202.130.202.19 202.130.202.40 23.45.207.170 23.45.207.172 23.62.212.66 23.62.212.110 23.62.212.101 23.62.212.99 23.62.212.96 23.220.71.197 23.220.71.186 23.49.104.199 23.49.104.213 23.211.60.70 23.211.60.78 203.186.47.73 203.186.47.74 203.186.47.147 203.186.47.160 203.186.47.162" ;;
     upos-sz-mirroraliov.bilivideo.com)
         echo "47.246.41.174 47.246.41.175 47.246.41.176 47.246.41.177 47.246.41.178 47.246.41.179 47.246.41.180 47.246.41.181 163.181.81.231 163.181.81.233 163.181.81.236 163.181.35.183 163.181.35.184 163.181.35.180 155.102.4.5 155.102.4.6 155.102.4.141 155.102.4.145 163.181.78.183 163.181.78.184" ;;
+    upos-sz-mirrorcosov.bilivideo.com) echo "${BILI_COSOV_IPS:-}" ;;
     esac
 }
 
-# resolve fresh IPs via public DNS (bypasses AdGuard's own rewrite)
-resolve_extra() {
-    nslookup "$1" 1.1.1.1 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v '^1\.1\.1\.1$' | sort -u
-}
-
-# TCP connect time to :443 in ms; empty = unreachable (best of 2 tries)
-measure() {
-    local ip="$1" best="" t ms i
-    for i in 1 2; do
-        t=$(curl -kso /dev/null -m 2 -w '%{time_connect}' "https://$ip/" 2>/dev/null)
-        ms=$(awk -v t="$t" 'BEGIN{printf "%d", t*1000}')
-        [ "$ms" -gt 0 ] 2>/dev/null || continue
-        if [ -z "$best" ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
-    done
-    echo "$best"
-}
+# Median real download throughput; require video and audio to pass.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+BILI_MEDIA_DIR=${BILI_MEDIA_DIR:-"$SCRIPT_DIR/../media"}
+. "$SCRIPT_DIR/../common/download-speed.sh"
+speed_init || exit 1
 
 agh() { # agh <endpoint> <domain> <ip>
     curl -s -o /dev/null -w '%{http_code}' -u "$AGH_USER:$AGH_PASS" \
@@ -53,30 +43,30 @@ agh() { # agh <endpoint> <domain> <ip>
         "$AGH_URL/control/rewrite/$1"
 }
 
-touch "$STATE_FILE"
+[ "$DRY_RUN" = 1 ] || touch "$STATE_FILE" || exit 1
 
 for domain in $DOMAINS; do
     log "=== $domain ==="
-    old_ip=$(grep "^$domain=" "$STATE_FILE" | cut -d= -f2)
+    old_ip=$(grep "^$domain=" "$STATE_FILE" 2>/dev/null | cut -d= -f2)
 
     # if current pinned node is still healthy, do nothing
     if [ -n "$old_ip" ]; then
-        old_ms=$(measure "$old_ip")
-        if [ -n "$old_ms" ] && [ "$old_ms" -le "$KEEP_THRESHOLD_MS" ]; then
-            log "current $old_ip still good (${old_ms}ms) - keeping"
+        old_speed=$(measure "$domain" "$old_ip")
+        if [ -n "$old_speed" ] && [ "$old_speed" -ge "$KEEP_THRESHOLD_BPS" ]; then
+            log "current $old_ip still good (${old_speed} bytes/s) - keeping"
             continue
         fi
-        log "current $old_ip is slow or dead (${old_ms:-timeout}ms) - re-testing"
+        log "current $old_ip is slow or dead (${old_speed:-failed} bytes/s) - re-testing"
     fi
 
     # test all candidates
-    best_ip=""; best_ms=999999
-    for ip in $(printf '%s\n%s\n' "$(candidates_for "$domain")" "$(resolve_extra "$domain")" | tr ' ' '\n' | sort -u); do
+    best_ip=""; best_speed=0
+    for ip in $(printf '%s\n%s\n' "${BILI_CANDIDATE_IPS:-$(candidates_for "$domain")}" "$(resolve_extra "$domain")" | tr ' ' '\n' | sort -u); do
         [ -n "$ip" ] || continue
-        ms=$(measure "$ip")
-        [ -n "$ms" ] || continue
-        log "  $ip ${ms}ms"
-        if [ "$ms" -lt "$best_ms" ]; then best_ms=$ms; best_ip=$ip; fi
+        speed=$(measure "$domain" "$ip")
+        [ -n "$speed" ] || continue
+        log "  $ip ${speed} bytes/s"
+        if [ "$speed" -gt "$best_speed" ]; then best_speed=$speed; best_ip=$ip; fi
     done
 
     if [ -z "$best_ip" ]; then
@@ -84,30 +74,34 @@ for domain in $DOMAINS; do
         continue
     fi
     if [ "$best_ip" = "$old_ip" ]; then
-        log "best is still $best_ip (${best_ms}ms) - no change"
+        log "best is still $best_ip (${best_speed} bytes/s) - no change"
         continue
     fi
+
+    [ "$DRY_RUN" = 1 ] && { log "WOULD PIN: $domain -> $best_ip ($best_speed bytes/s)"; continue; }
 
     # update AdGuard Home rewrite
     if [ -n "$old_ip" ]; then
         code=$(agh delete "$domain" "$old_ip")
         log "deleted old rewrite $old_ip (HTTP $code)"
+        [ "$code" = "200" ] || { log "delete failed, leaving state unchanged"; continue; }
     fi
     code=$(agh add "$domain" "$best_ip")
     if [ "$code" = "200" ]; then
-        log "NEW rewrite: $domain -> $best_ip (${best_ms}ms)"
+        log "NEW rewrite: $domain -> $best_ip (${best_speed} bytes/s)"
         grep -v "^$domain=" "$STATE_FILE" > "$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"
         echo "$domain=$best_ip" >> "$STATE_FILE"
     else
         log "FAILED to add rewrite (HTTP $code) - check AGH_URL/USER/PASS"
+        [ -z "$old_ip" ] || agh add "$domain" "$old_ip" >/dev/null
     fi
 done
 
 # --- check router static DNS entries are still in sync (optional) ---
-if [ -n "$ROUTER_DNS" ]; then
+if [ "$DRY_RUN" != 1 ] && [ -n "$ROUTER_DNS" ]; then
     MISMATCH=""
     for domain in $DOMAINS; do
-        pinned=$(grep "^$domain=" "$STATE_FILE" | cut -d= -f2)
+        pinned=$(grep "^$domain=" "$STATE_FILE" 2>/dev/null | cut -d= -f2)
         [ -n "$pinned" ] || continue
         answers=$(nslookup "$domain" "$ROUTER_DNS" 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v "^$ROUTER_DNS\$")
         if [ -z "$answers" ]; then
