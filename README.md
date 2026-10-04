@@ -7,7 +7,7 @@
 
 ## 本分支：实际下载测速
 
-`download-speed` 分支用视频和音频各三轮的下载速度选节点，默认每轮最多 32 MiB，保留 TLS 验证，并增加 mirrorcosov 支持。先获取新鲜媒体地址再运行原入口；使用方法、流量和恢复说明见 [实际下载测速](docs/download-speed.md)。
+`download-speed` 分支用视频和音频各三轮的下载速度选节点，默认每轮最多 32 MiB，保留 TLS 验证，并增加 mirrorcosov 支持。原入口自动获取新鲜媒体地址；使用方法、流量和恢复说明见 [实际下载测速](docs/download-speed.md)。
 
 ## 它解决什么问题
 
@@ -27,21 +27,19 @@ upos-sz-mirrorcosov.bilivideo.com  (腾讯云海外)
 
 ### 本机模式（hosts，只管这台电脑）
 
-从仓库根目录执行。需要 Python 3 和 curl；Mac 自带的命令行工具可提供 Python 3（先检查 `python3 --version`）。
+从仓库根目录执行。Mac/Linux 需要 curl 和 jq，不需要 Python。本 Mac 已有 jq；其他 Mac 可用 `brew install jq`。Windows 使用原生 PowerShell。
 
 macOS：
 
 先仅测速（不需要 sudo）：
 
 ```bash
-python3 tools/media-urls.py BV1Ra4y117kf --video-codec hevc &&
 bash macos/bili-cdn-fix.sh --dry-run
 ```
 
 正式运行（先备份 hosts/DNS，再测速和写入）：
 
 ```bash
-python3 tools/media-urls.py BV1Ra4y117kf --video-codec hevc &&
 sudo bash macos/bili-cdn-fix.sh
 ```
 
@@ -51,16 +49,15 @@ sudo bash macos/bili-cdn-fix.sh
 sudo bash macos/bili-cdn-fix.sh --restore
 ```
 
-这些命令可反复执行，不依赖临时文件、手动 CID 或固定 IP。媒体工具会自动取得 CID，视频详情接口返回 412 时回退到分 P 列表接口；准备失败时 `&&` 会阻止继续测速或安装。正常运行会重新选择节点，不直接安装上一次 dry-run 的结果。`--restore` 不需要媒体地址，也不修改 DNS 设置。macOS 输入 sudo 密码时终端不显示字符。
+这些命令可反复执行，不依赖临时文件、手动 CID 或固定 IP。入口会自动取得 CID，视频详情接口返回 412 时回退到分 P 列表接口；获取失败时入口会退出，保留已有 pin。正常运行会重新选择节点，不直接安装上一次 dry-run 的结果。`--restore` 不需要媒体地址，也不修改 DNS 设置。macOS 输入 sudo 密码时终端不显示字符。
 
-本 Mac 上发现部分 AVC 文件的 Akamai 响应提前断开，因此示例显式选择 HEVC；工具仍选择该编码下接口提供的最高带宽视频和最高带宽音频。无登录可能仅获得低清文件，文件小于 32 MiB 时下载整个文件。可替换 BVID，或使用 `--video-codec auto/avc/av1`。选择编码只影响测速资源，不改变播放器编码。冷缓存可能明显慢于后两轮，不能保证所有视频都更快。
+本 Mac 上发现部分 AVC 文件的 Akamai 响应提前断开，因此默认选择 HEVC；工具仍选择该编码下接口提供的最高带宽视频和最高带宽音频。无登录可能仅获得低清文件，文件小于 32 MiB 时下载整个文件。可通过环境变量 `BILI_BVID` 替换视频，或设置 `BILI_VIDEO_CODEC=auto/avc/av1`。选择编码只影响测速资源，不改变播放器编码。冷缓存可能明显慢于后两轮，不能保证所有视频都更快。
 
 备份位于 `/etc/hosts.bak_时间戳*`；未通过音视频全部三轮的域名保留已有配置。测试后关闭并重新打开浏览器，检查是否正常播放以及播放器统计信息。Mac 验证 hosts 应用 `dscacheutil -q host -a name upos-sz-mirrorcosov.bilivideo.com`，`nslookup` 查询 DNS 不读取 hosts。
 
-Windows 先用同一媒体准备命令，再运行原入口：
+Windows 直接运行原入口：
 
 ```powershell
-python tools/media-urls.py BV1Ra4y117kf --video-codec hevc
 powershell -File windows/bili-cdn-fix.ps1 -DryRun
 powershell -File windows/bili-cdn-fix.ps1
 # 撤销：powershell -File windows/bili-cdn-fix.ps1 -Restore
@@ -72,7 +69,7 @@ powershell -File windows/bili-cdn-fix.ps1
 
 1. 常开设备装 AdGuard Home，上游DNS填 `1.1.1.1`
 2. 路由器 DHCP 的 DNS 指向这台设备；设备自身DNS填 `1.1.1.1`（防环路）
-3. 部署更新脚本（改开头的地址/账号/密码），每次运行前执行 `python3 tools/media-urls.py BV1Ra4y117kf --video-codec hevc` 刷新媒体地址，再加每周日 04:30 定时任务（保持仓库目录结构）：
+3. 部署更新脚本（改开头的地址/账号/密码），入口每次自动刷新媒体地址，再加每周日 04:30 定时任务（保持仓库目录结构）：
    - 群晖：DSM 任务计划，root 运行 `bash /path/to/server/bili-agh-update.sh >> /path/to/bili-agh.log 2>&1`
    - Mac mini / Debian：`sudo crontab -e` 加 `30 4 * * 0 /bin/bash /path/to/server/bili-agh-update.sh >> /path/to/bili-agh.log 2>&1`（macOS记得关睡眠）
    - Windows常驻机：任务计划程序运行 `windows\bili-agh-update.ps1`
@@ -83,10 +80,11 @@ powershell -File windows/bili-cdn-fix.ps1
 dnsmasq 把路由器 `/etc/hosts` 的记录答复给全局域网，无需AdGuard：
 
 ```sh
-opkg install curl
-# 先在电脑运行媒体准备命令，将仓库及 media/*.url 复制到路由器；每次测试需刷新地址
+opkg update
+opkg install curl jq ca-bundle
+# 将完整仓库复制到路由器；入口自动获取媒体地址
 sh openwrt/bili-openwrt-update.sh
-# crontab -e 加：30 4 * * 0 /root/bili-openwrt-update.sh >> /root/bili-cdn.log 2>&1
+# crontab -e 加：30 4 * * 0 /root/bili-cdn-dns-pin/openwrt/bili-openwrt-update.sh >> /root/bili-cdn.log 2>&1
 ```
 
 ## 目录结构

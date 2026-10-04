@@ -1,8 +1,6 @@
 """Exercise real shell scoring with a deterministic curl substitute."""
 import os
-import importlib.util
 import sys
-from unittest.mock import patch
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,6 +11,12 @@ MOCK = r'''#!/usr/bin/env python3
 import os,sys,json
 from pathlib import Path
 a=sys.argv[1:]
+if '--dump-header' not in a and 'api.bilibili.com' in a[-1]:
+ if os.environ.get('MOCK_API_FAIL'): sys.exit(22)
+ if '/view?' in a[-1]: sys.exit(22)
+ if '/pagelist?' in a[-1]: print('{"code":0,"data":[{"cid":123}]}'); sys.exit(0)
+ def track(kind, codec): return {'codecid':codec,'bandwidth':400,'baseUrl':'https://upos-hz-mirrorakam.akamaized.net/'+kind+'?fresh','backupUrl':[]}
+ print(json.dumps({'code':0,'data':{'dash':{'video':[track('video',12)],'audio':[track('audio',0)]}}})); sys.exit(0)
 if '--dump-header' not in a:
  print('{"Answer":[]}'); sys.exit(0)
 def value(flag): return a[a.index(flag)+1]
@@ -59,8 +63,19 @@ class DownloadSpeed(unittest.TestCase):
             (p/(kind+'.url')).write_text('https://upos-sz-mirrorcosov.bilivideo.com/'+kind+'?generic')
             (p/('upos-hz-mirrorakam.akamaized.net.'+kind+'.url')).write_text('https://upos-hz-mirrorakam.akamaized.net/'+kind+'?original-signature')
         self.env.pop('BILI_VIDEO_URL'); self.env.pop('BILI_AUDIO_URL')
-        self.env.update(BILI_MEDIA_DIR=str(p), EXPECTED_TOKEN='original-signature')
+        self.env.update(BILI_MEDIA_DIR=str(p), BILI_USE_MEDIA_FILES='1', EXPECTED_TOKEN='original-signature')
         r=self.measure(); self.assertEqual(r.returncode,0,r.stderr)
+    def test_native_media_entry_and_failure_preserve_hosts(self):
+        hosts=Path(self.tmp.name)/'hosts'; hosts.write_text('127.0.0.1 localhost\n')
+        self.env.pop('BILI_VIDEO_URL'); self.env.pop('BILI_AUDIO_URL')
+        self.env.update(BILI_HOSTS=str(hosts), BILI_DOMAINS='upos-hz-mirrorakam.akamaized.net', BILI_CANDIDATE_IPS='1.2.3.1')
+        script=str(ROOT/'macos/bili-cdn-fix.sh')
+        run=subprocess.run(['bash',script,'--dry-run'],env=self.env,text=True,capture_output=True)
+        self.assertEqual(run.returncode,0,run.stderr); self.assertIn('Fresh video/audio fetched',run.stderr)
+        self.assertIn('BEST: 1.2.3.1  500 bytes/s',run.stdout)
+        self.env['MOCK_API_FAIL']='1'
+        failed=subprocess.run(['bash',script,'--dry-run'],env=self.env,text=True,capture_output=True)
+        self.assertNotEqual(failed.returncode,0); self.assertEqual(hosts.read_text(),'127.0.0.1 localhost\n')
     def test_short_file_valid(self):
         r=self.measure('small'); self.assertEqual(r.returncode,0,r.stderr)
     def test_failures_reject_candidate(self):
@@ -97,26 +112,29 @@ class DownloadSpeed(unittest.TestCase):
 
 class OfficialWorkflow(unittest.TestCase):
     def test_media_preparation_recovers_from_412_and_filters_codec(self):
-        spec=importlib.util.spec_from_file_location('media_urls', ROOT/'tools/media-urls.py')
-        module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-        calls=[]
-        def api(url):
-            calls.append(url)
-            if '/view?' in url: raise RuntimeError('HTTP 412')
-            if '/pagelist?' in url: return {'code':0,'data':[{'cid':123}]}
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)
             def track(codec,bw,path):
-                return {'id':32,'codecid':codec,'bandwidth':bw,'codecs':'codec',
-                        'baseUrl':'https://upos-hz-mirrorakam.akamaized.net/'+path,'backupUrl':[]}
-            return {'code':0,'data':{'dash':{'video':[track(7,900,'avc'),track(12,400,'hevc')],
-                                             'audio':[track(0,100,'audio')]}}}
-        module.api=api
-        with tempfile.TemporaryDirectory() as d, patch.object(sys,'argv',['media-urls.py','BV1Ra4y117kf','--video-codec','hevc','--output',d]):
-            module.main()
-            self.assertTrue((Path(d)/'video.url').read_text().endswith('/hevc\n'))
-            self.assertTrue((Path(d)/'audio.url').exists())
-            self.assertEqual((Path(d)/'video.url').stat().st_mode & 0o777,0o600)
-        self.assertTrue(any('/pagelist?' in url for url in calls))
-        self.assertTrue(any('cid=123' in url for url in calls))
+                return {'codecid':codec,'bandwidth':bw,'baseUrl':'https://upos-hz-mirrorakam.akamaized.net/'+path,'backupUrl':[]}
+            payload={'code':0,'data':{'dash':{'video':[track(7,900,'avc'),track(12,400,'hevc')], 'audio':[track(0,100,'audio')]}}}
+            (p/'play.json').write_text(json.dumps(payload))
+            curl=p/'curl'
+            curl.write_text("""#!/bin/sh
+case "$*" in
+*view?*) exit 22 ;;
+*pagelist?*) echo '{"code":0,"data":[{"cid":123}]}' ;;
+*playurl?*cid=123*) cat "$FIXTURE/play.json" ;;
+*) exit 1 ;;
+esac
+""")
+            curl.chmod(0o755)
+            env=dict(os.environ,PATH=d+':'+os.environ['PATH'],FIXTURE=d)
+            run=subprocess.run(['sh','-c','. "$1"; prepare_media || exit; cat "$BILI_MEDIA_DIR/video.url"; cat "$BILI_MEDIA_DIR/audio.url"; stat -f %Lp "$BILI_MEDIA_DIR/video.url"; echo "$BILI_MEDIA_DIR"','sh',str(ROOT/'common/media-urls.sh')],env=env,text=True,capture_output=True)
+            self.assertEqual(run.returncode,0,run.stderr)
+            self.assertIn('/hevc\n',run.stdout); self.assertIn('/audio\n',run.stdout)
+            if sys.platform=='darwin': self.assertIn('600\n',run.stdout)
+            self.assertFalse(Path(run.stdout.strip().splitlines()[-1]).exists())
     @unittest.skipUnless(sys.platform=='darwin','native macOS restore uses BSD sed')
     def test_official_macos_write_backup_and_restore(self):
         with tempfile.TemporaryDirectory() as d:

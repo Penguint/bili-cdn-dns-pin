@@ -10,6 +10,13 @@ speed_init() {
         *[!0-9:]*|:*|*::*|*:) echo "Invalid speed settings" >&2; return 1 ;;
     esac
     [ "$SPEED_ROUNDS" -ge 3 ] && [ "$SPEED_BYTES" -gt 0 ] && [ "$SPEED_TIMEOUT" -gt 0 ] || return 1
+    # Explicit URLs or a caller-managed directory remain available for custom tests.
+    if [ -z "${BILI_VIDEO_URL:-}" ] || [ -z "${BILI_AUDIO_URL:-}" ]; then
+        if [ "${BILI_USE_MEDIA_FILES:-0}" != 1 ]; then
+            . "$SCRIPT_DIR/../common/media-urls.sh"
+            prepare_media || return 1
+        fi
+    fi
     VIDEO_URL_EXPLICIT=${BILI_VIDEO_URL:+1}
     AUDIO_URL_EXPLICIT=${BILI_AUDIO_URL:+1}
     BILI_VIDEO_URL=${BILI_VIDEO_URL:-$(cat "$BILI_MEDIA_DIR/video.url" 2>/dev/null)}
@@ -17,7 +24,7 @@ speed_init() {
     for media_url in "$BILI_VIDEO_URL" "$BILI_AUDIO_URL"; do
         case "$media_url" in
             https://upos-hz-mirrorakam.akamaized.net/*|https://upos-sz-mirroraliov.bilivideo.com/*|https://upos-sz-mirrorcosov.bilivideo.com/*) ;;
-            *) echo "Provide fresh video/audio URLs: python3 tools/media-urls.py BVID" >&2; return 1 ;;
+            *) echo "Cannot obtain valid video/audio URLs" >&2; return 1 ;;
         esac
     done
 }

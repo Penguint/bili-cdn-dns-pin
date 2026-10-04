@@ -26,17 +26,15 @@ Just run it again whenever things stall — no schedule needed:
 
 ```powershell
 # Windows: right-click → "Run with PowerShell" (it auto-prompts for admin); to undo add -Restore
-python tools/media-urls.py BV1Ra4y117kf --video-codec hevc
 windows\bili-cdn-fix.ps1
 ```
 
 ```bash
-# macOS: fresh media, then measure without changing hosts/DNS
-python3 tools/media-urls.py BV1Ra4y117kf --video-codec hevc &&
+# macOS: fetch fresh media automatically and measure without changing hosts/DNS
 bash macos/bili-cdn-fix.sh --dry-run
 ```
 
-To install, refresh the media and run `sudo bash macos/bili-cdn-fix.sh`; it backs up hosts/DNS before testing and writes only successful domains. To undo, run `sudo bash macos/bili-cdn-fix.sh --restore`. Python 3 and curl are required. The media tool automatically falls back to the public page-list API if the view API fails. HEVC avoids incomplete responses observed for some AVC test resources; this setting does not change the player codec. URLs expire: refresh them before every run. Cold-cache speed can be much lower than repeated-download speed.
+To install, run `sudo bash macos/bili-cdn-fix.sh`; it backs up hosts/DNS before testing and writes only successful domains. To undo, run `sudo bash macos/bili-cdn-fix.sh --restore`. Shell entry points require curl and jq; Windows uses native PowerShell. No Python is required. Each entry point automatically falls back to the public page-list API if the view API fails. HEVC avoids incomplete responses observed for some AVC test resources; this setting does not change the player codec. URLs are refreshed automatically on every run. Cold-cache speed can be much lower than repeated-download speed.
 
 ### Server mode (whole household, recommended)
 
@@ -44,7 +42,7 @@ Run [AdGuard Home](https://github.com/AdguardTeam/AdGuardHome) on any always-on 
 
 1. Install AdGuard Home on an always-on device; set the upstream DNS to `1.1.1.1`
 2. Point the router's DHCP DNS at this device; set the device's own DNS to `1.1.1.1` (to prevent a loop)
-3. Refresh media URLs using the preparation command before each scheduled run, keep the repository directory structure, and deploy the update script (edit the address / username / password at the top), then add a weekly Sunday 04:30 scheduled task:
+3. The entry point refreshes media automatically. Keep the repository directory structure, and deploy the update script (edit the address / username / password at the top), then add a weekly Sunday 04:30 scheduled task:
    - Synology: DSM Task Scheduler, run as root `bash /path/to/server/bili-agh-update.sh >> /path/to/bili-agh.log 2>&1`
    - Mac mini / Debian: `sudo crontab -e` and add `30 4 * * 0 /bin/bash /path/to/server/bili-agh-update.sh >> /path/to/bili-agh.log 2>&1` (remember to disable sleep on macOS)
    - Always-on Windows machine: Task Scheduler to run `windows\bili-agh-update.ps1`
@@ -55,10 +53,11 @@ Run [AdGuard Home](https://github.com/AdguardTeam/AdGuardHome) on any always-on 
 dnsmasq replies to the whole LAN from the router's `/etc/hosts` — no AdGuard needed:
 
 ```sh
-opkg install curl
-# Generate fresh media/*.url on a computer and copy them with the repository before each run.
+opkg update
+opkg install curl jq ca-bundle
+# Copy the complete repository; media URLs are fetched automatically.
 sh openwrt/bili-openwrt-update.sh
-# crontab -e add: 30 4 * * 0 /root/bili-openwrt-update.sh >> /root/bili-cdn.log 2>&1
+# crontab -e add: 30 4 * * 0 /root/bili-cdn-dns-pin/openwrt/bili-openwrt-update.sh >> /root/bili-cdn.log 2>&1
 ```
 
 ## Directory structure

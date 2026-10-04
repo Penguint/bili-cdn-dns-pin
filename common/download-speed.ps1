@@ -5,10 +5,13 @@ $SpeedTimeout = if ($env:BILI_SPEED_TIMEOUT) { [int]$env:BILI_SPEED_TIMEOUT } el
 $KeepThresholdBps = if ($env:BILI_KEEP_BPS) { [long]$env:BILI_KEEP_BPS } else { 5000000 }
 $MediaDir = if ($env:BILI_MEDIA_DIR) { $env:BILI_MEDIA_DIR } else { Join-Path $PSScriptRoot '..\media' }
 
+. (Join-Path $PSScriptRoot 'media-urls.ps1')
 function Initialize-Speed {
     if ($SpeedRounds -lt 3 -or $SpeedBytes -le 0 -or $SpeedTimeout -le 0 -or $KeepThresholdBps -lt 0) { throw 'Invalid speed settings' }
-    $script:VideoUrl = if ($env:BILI_VIDEO_URL) { $env:BILI_VIDEO_URL } else { (Get-Content (Join-Path $MediaDir 'video.url') -Raw -ErrorAction Stop).Trim() }
-    $script:AudioUrl = if ($env:BILI_AUDIO_URL) { $env:BILI_AUDIO_URL } else { (Get-Content (Join-Path $MediaDir 'audio.url') -Raw -ErrorAction Stop).Trim() }
+    $script:FreshMedia = $null
+    if ((-not $env:BILI_VIDEO_URL -or -not $env:BILI_AUDIO_URL) -and $env:BILI_USE_MEDIA_FILES -ne '1') { Get-FreshMedia }
+    $script:VideoUrl = if ($env:BILI_VIDEO_URL) { $env:BILI_VIDEO_URL } elseif ($FreshMedia) { $FreshMedia['video'] } else { (Get-Content (Join-Path $MediaDir 'video.url') -Raw -ErrorAction Stop).Trim() }
+    $script:AudioUrl = if ($env:BILI_AUDIO_URL) { $env:BILI_AUDIO_URL } elseif ($FreshMedia) { $FreshMedia['audio'] } else { (Get-Content (Join-Path $MediaDir 'audio.url') -Raw -ErrorAction Stop).Trim() }
     foreach ($url in $VideoUrl, $AudioUrl) {
         $uri = [uri]$url
         if ($uri.Scheme -ne 'https' -or $uri.Host -notin @('upos-hz-mirrorakam.akamaized.net','upos-sz-mirroraliov.bilivideo.com','upos-sz-mirrorcosov.bilivideo.com') -or -not $uri.IsDefaultPort -or $uri.UserInfo) { throw 'Invalid media URL' }
@@ -34,7 +37,8 @@ function Test-IpSpeed {
             $sourceUrl = if ($kind -eq 'video') { $VideoUrl } else { $AudioUrl }
             $explicit = if ($kind -eq 'video') { $env:BILI_VIDEO_URL } else { $env:BILI_AUDIO_URL }
             $domainFile = Join-Path $MediaDir "$Domain.$kind.url"
-            if (-not $explicit -and (Test-Path $domainFile)) { $sourceUrl = (Get-Content $domainFile -Raw -ErrorAction Stop).Trim() }
+            if (-not $explicit -and $FreshMedia -and $FreshMedia.ContainsKey("$Domain.$kind")) { $sourceUrl = $FreshMedia["$Domain.$kind"] }
+            if (-not $explicit -and -not $FreshMedia -and (Test-Path $domainFile)) { $sourceUrl = (Get-Content $domainFile -Raw -ErrorAction Stop).Trim() }
             $uri = [uri]$sourceUrl
             if ($uri.Scheme -ne 'https' -or $uri.Host -notin @('upos-hz-mirrorakam.akamaized.net','upos-sz-mirroraliov.bilivideo.com','upos-sz-mirrorcosov.bilivideo.com') -or -not $uri.IsDefaultPort -or $uri.UserInfo) { return $null }
             $url = 'https://' + $Domain + $uri.PathAndQuery

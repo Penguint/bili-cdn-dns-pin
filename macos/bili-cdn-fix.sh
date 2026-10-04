@@ -17,7 +17,7 @@ while [ "$#" -gt 0 ]; do
         --restore) MODE=restore ;;
         --help|-h)
             echo "Usage: bash $0 [--dry-run | --restore]"
-            echo "Prepare fresh media with python3 tools/media-urls.py BVID first."
+            echo "Media URLs are fetched automatically (curl + jq)."
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
