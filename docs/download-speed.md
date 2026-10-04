@@ -7,10 +7,10 @@
 在装有 Python 3 的电脑上，获取你要验证的视频和音频地址：
 
 ```bash
-python3 tools/media-urls.py BV1Ra4y117kf
+python3 tools/media-urls.py BV1Ra4y117kf --video-codec hevc
 ```
 
-若视频信息接口返回 412，而你已知 CID，可加 `--cid 1413611232` 跳过该接口。
+视频详情接口返回 412 时，工具自动回退到分 P 列表接口取得 CID；也保留可选 `--cid` 参数。`--video-codec` 可选 auto/hevc/avc/av1：指定编码后，选择该编码下的最高带宽视频，不改变播放器编码。Mac 实测部分 AVC 资源在 Akamai 提前断开，示例选择 HEVC，仍要求完整下载。
 
 工具沿用 `research/lib.py` 的 API 请求，分别选择接口提供的最高带宽视频和音频，并保存各 CDN 可用的原始签名地址，测速优先用对应 CDN 地址。无登录时接口可能只返回低清视频；想测更大的文件，可换长视频，或把自己播放器当前的完整 HTTPS 媒体地址写入 `media/video.url`、`media/audio.url`。文件被 Git 忽略；不要提交含签名的地址或登录 cookie。
 
@@ -19,7 +19,7 @@ python3 tools/media-urls.py BV1Ra4y117kf
 ## 先仅测试
 
 ```bash
-BILI_DRY_RUN=1 bash macos/bili-cdn-fix.sh
+bash macos/bili-cdn-fix.sh --dry-run
 BILI_DRY_RUN=1 bash server/bili-agh-update.sh
 BILI_DRY_RUN=1 sh openwrt/bili-openwrt-update.sh
 ```
@@ -31,7 +31,7 @@ powershell -File windows/bili-cdn-fix.ps1 -DryRun
 powershell -File windows/bili-agh-update.ps1 -DryRun
 ```
 
-确认后仍用原来的正常运行命令。Mac 的 `--restore`、Windows 的 `-Restore` 保留；OpenWrt 新增 `--restore`。hosts 写入前备份，未测出可用节点的域名保留已有记录。AdGuard 仍使用原来的 API 和状态文件；新节点添加失败时尝试恢复旧记录。
+确认后仍用原来的正常运行命令。Mac 的 `--restore`、Windows 的 `-Restore` 保留；OpenWrt 新增 `--restore`。Mac 正常运行重新测速，写入前在 hosts 旁备份 hosts、系统 DNS 信息、网络服务与当前服务的 DNS 服务器（默认 Wi-Fi，可设 `BILI_NETWORK_SERVICE`），不改变 DNS；其他 hosts 入口也写入前备份。未测出可用节点的域名保留已有记录。AdGuard 仍使用原来的 API 和状态文件；新节点添加失败时尝试恢复旧记录。
 
 现在入口需要 `common/` 目录，部署时保留仓库目录结构，不能只复制单个脚本。AdGuard 定时任务需先执行媒体地址工具，再运行更新脚本；Python 不必装到只执行 shell 测速的路由器上。
 

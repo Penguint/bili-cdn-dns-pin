@@ -10,16 +10,31 @@ MARKER="# BiliCdnFix"
 HOSTS=${BILI_HOSTS:-/etc/hosts}
 DOMAINS=${BILI_DOMAINS:-"upos-hz-mirrorakam.akamaized.net upos-sz-mirroraliov.bilivideo.com upos-sz-mirrorcosov.bilivideo.com"}
 
+MODE=run
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --dry-run) export BILI_DRY_RUN=1 ;;
+        --restore) MODE=restore ;;
+        --help|-h)
+            echo "Usage: bash $0 [--dry-run | --restore]"
+            echo "Prepare fresh media with python3 tools/media-urls.py BVID first."
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+    shift
+done
+
 if [ "$(id -u)" -ne 0 ] && [ "${BILI_DRY_RUN:-0}" != 1 ]; then
-    echo "Please run with sudo:  sudo bash $0 $*"
+    echo "Please run with sudo:  sudo bash $0 (or use --dry-run)"
     exit 1
 fi
 
 flush_dns() { dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null; }
 
-if [ "${1:-}" = "--restore" ]; then
+if [ "$MODE" = restore ]; then
     [ "${BILI_DRY_RUN:-0}" = 1 ] && { echo "Dry run: hosts unchanged"; exit 0; }
-    sed -i '' "/$MARKER/d" "$HOSTS"
+    cp -p "$HOSTS" "$HOSTS.bak_$(date +%Y%m%d_%H%M%S)_restore" || exit 1
+    sed -i '' "/$MARKER/d" "$HOSTS" || exit 1
     flush_dns
     echo "Restored: all BiliCdnFix entries removed."
     exit 0
@@ -38,7 +53,15 @@ candidates_for() {
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 BILI_MEDIA_DIR=${BILI_MEDIA_DIR:-"$SCRIPT_DIR/../media"}
 . "$SCRIPT_DIR/../common/download-speed.sh"
+if [ "$DRY_RUN" != 1 ]; then
+    BACKUP="$HOSTS.bak_$(date +%Y%m%d_%H%M%S)"
+    cp -p "$HOSTS" "$BACKUP" || exit 1
+    scutil --dns > "$BACKUP.dns.txt" || exit 1
+    networksetup -listallnetworkservices > "$BACKUP.network-services.txt" || exit 1
+    networksetup -getdnsservers "${BILI_NETWORK_SERVICE:-Wi-Fi}" > "$BACKUP.dns-servers.txt" || exit 1
+fi
 speed_init || exit 1
+echo "Download test: $SPEED_ROUNDS rounds per media, up to $SPEED_BYTES bytes each; failed domains remain unchanged."
 
 
 NEW_LINES=""
@@ -70,7 +93,6 @@ if [ -z "$NEW_LINES" ]; then
 fi
 
 [ "$DRY_RUN" = 1 ] && { printf '%b' "$NEW_LINES"; exit 0; }
-cp "$HOSTS" "$HOSTS.bak_$(date +%Y%m%d_%H%M%S)" || exit 1
 TMP=$(mktemp) || exit 1
 # Preserve unrelated and failed-domain entries, including prior pins.
 awk -v domains="$SUCCESS_DOMAINS" 'BEGIN{split(domains,a," "); for(i in a) d[a[i]]=1}
