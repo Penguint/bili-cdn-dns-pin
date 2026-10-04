@@ -110,6 +110,30 @@ class DownloadSpeed(unittest.TestCase):
         self.assertEqual(r.returncode,0,r.stderr); self.assertIn('BEST: 1.2.3.1  500 bytes/s',r.stdout)
         self.assertEqual(hosts.read_text(),'127.0.0.1 localhost\n'); self.assertFalse(list(hosts.parent.glob('hosts.bak*')))
 
+class RouterApi(unittest.TestCase):
+    def test_glinet_auth_is_short_lived_and_loopback_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)
+            (p/'id').write_text('#!/bin/sh\necho 0\n'); (p/'id').chmod(0o755)
+            (p/'curl').write_text("""#!/usr/bin/env python3
+import sys,struct,time,stat
+from pathlib import Path
+a=sys.argv[1:]; token=a[a.index('--cookie')+1].split('=',1)[1]
+f=Path('/tmp/gl_token_'+token)
+assert len(f.read_bytes())==4
+assert abs(struct.unpack('<I',f.read_bytes())[0]-time.time())<5
+assert stat.S_IMODE(f.stat().st_mode)==0o600
+assert a[-1]=='http://127.0.0.1:3000/control/status'
+print(f)
+"""); (p/'curl').chmod(0o755)
+            env=dict(os.environ,PATH=d+':'+os.environ['PATH'],BILI_AGH_GLINET='1',AGH_URL='http://127.0.0.1:3000')
+            command=['sh','-c','. "$1"; agh_request status ""','sh',str(ROOT/'common/agh-api.sh')]
+            run=subprocess.run(command,env=env,text=True,capture_output=True)
+            self.assertEqual(run.returncode,0,run.stderr); self.assertFalse(Path(run.stdout.strip()).exists())
+            env['AGH_URL']='http://example.com:3000'
+            refused=subprocess.run(command,env=env,text=True,capture_output=True)
+            self.assertNotEqual(refused.returncode,0); self.assertEqual(refused.stdout,'')
+
 class OfficialWorkflow(unittest.TestCase):
     def test_media_preparation_recovers_from_412_and_filters_codec(self):
         import json

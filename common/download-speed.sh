@@ -36,6 +36,8 @@ measure() (
     case "$ip" in *[!0-9.]*|0.0.0.0|'') return 1 ;; esac
     scratch=$(mktemp -d) || return 1
     trap 'rm -rf "$scratch"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
     score=''
     for kind in video audio; do
         if [ "$kind" = video ]; then source_url=$BILI_VIDEO_URL; else source_url=$BILI_AUDIO_URL; fi

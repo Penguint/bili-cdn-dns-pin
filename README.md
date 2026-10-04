@@ -87,6 +87,22 @@ sh openwrt/bili-openwrt-update.sh
 # crontab -e 加：30 4 * * 0 /root/bili-cdn-dns-pin/openwrt/bili-openwrt-update.sh >> /root/bili-cdn.log 2>&1
 ```
 
+### GL.iNet 路由器已有 AdGuard Home
+
+保留 AdGuard Home，在路由器 root 下直接运行（无须保存管理员密码）：
+
+```sh
+sh /root/bili-cdn-dns-pin/openwrt/bili-agh-scheduled.sh
+```
+
+部署前停用同域名的 CDN 屏蔽订阅。GL.iNet 入口使用本机短期认证，通过 API 更新 DNS 重写；保留原来的下载测速和健康复查。LuCI → System → Scheduled Tasks 中加入：
+
+```cron
+30 4 * * 0 /bin/sh /root/bili-cdn-dns-pin/openwrt/bili-agh-scheduled.sh
+```
+
+时间按路由器时区。入口防止重复运行，日志保留本次和上次，位于 `/tmp/bili-cdn.log`、`/tmp/bili-cdn.previous.log`，重启后清除；运行结果写入系统日志。撤销时先移除定时任务，再在 AdGuard 的 DNS rewrites 页面删除本项目的三条记录，并清理 `server/bili-agh-state.txt`。保留原屏蔽订阅，可按需重新启用。
+
 ## 目录结构
 
 ```

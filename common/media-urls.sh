@@ -1,7 +1,7 @@
 # Native media discovery for the shell entry points (curl + jq).
 media_api() {
     curl --fail --silent --show-error --proto '=https' --connect-timeout 5 \
-        --max-time 25 --retry 2 --user-agent 'Mozilla/5.0' \
+        --max-time 25 --max-filesize 2097152 --retry 2 --user-agent 'Mozilla/5.0' \
         --referer 'https://www.bilibili.com/' "$1"
 }
 
@@ -25,6 +25,8 @@ prepare_media() {
     case "$cid" in ''|*[!0-9]*) echo "Cannot obtain content ID" >&2; return 1 ;; esac
     media_tmp=$(mktemp -d) || return 1
     trap 'rm -rf "$media_tmp"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
     BILI_MEDIA_DIR=$media_tmp
     media_api "https://api.bilibili.com/x/player/playurl?bvid=$bvid&cid=$cid&qn=127&fnval=4048&fourk=1" > "$media_tmp/play.json" || return 1
     jq -e --argjson codec "$codec" '

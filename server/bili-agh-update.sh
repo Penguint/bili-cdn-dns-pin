@@ -8,9 +8,9 @@
 # ============================================================
 
 # ------- EDIT THESE 3 LINES -------
-AGH_URL="http://127.0.0.1:80"      # AdGuard Home admin address (port chosen during setup, often 80 or 3000)
-AGH_USER="admin"                   # AdGuard Home login
-AGH_PASS="CHANGE_ME"               # AdGuard Home password
+AGH_URL=${BILI_AGH_URL:-"http://127.0.0.1:80"}      # AdGuard Home admin address (port chosen during setup, often 80 or 3000)
+AGH_USER=${BILI_AGH_USER:-"admin"}                   # AdGuard Home login
+AGH_PASS=${BILI_AGH_PASS:-"CHANGE_ME"}               # AdGuard Home password
 # ----------------------------------
 
 KEEP_THRESHOLD_BPS=${BILI_KEEP_BPS:-5000000}               # keep current node if both media medians reach this bytes/s threshold
@@ -36,13 +36,12 @@ BILI_MEDIA_DIR=${BILI_MEDIA_DIR:-"$SCRIPT_DIR/../media"}
 . "$SCRIPT_DIR/../common/download-speed.sh"
 speed_init || exit 1
 
+. "$SCRIPT_DIR/../common/agh-api.sh"
 agh() { # agh <endpoint> <domain> <ip>
-    curl -s -o /dev/null -w '%{http_code}' -u "$AGH_USER:$AGH_PASS" \
-        -H 'Content-Type: application/json' \
-        -d "{\"domain\":\"$2\",\"answer\":\"$3\"}" \
-        "$AGH_URL/control/rewrite/$1"
+    agh_request "rewrite/$1" "{\"domain\":\"$2\",\"answer\":\"$3\"}" -o /dev/null -w '%{http_code}'
 }
 
+failed=0
 [ "$DRY_RUN" = 1 ] || touch "$STATE_FILE" || exit 1
 
 for domain in $DOMAINS; do
@@ -71,6 +70,7 @@ for domain in $DOMAINS; do
 
     if [ -z "$best_ip" ]; then
         log "no reachable node found, leaving rewrite unchanged"
+        failed=1
         continue
     fi
     if [ "$best_ip" = "$old_ip" ]; then
@@ -84,7 +84,7 @@ for domain in $DOMAINS; do
     if [ -n "$old_ip" ]; then
         code=$(agh delete "$domain" "$old_ip")
         log "deleted old rewrite $old_ip (HTTP $code)"
-        [ "$code" = "200" ] || { log "delete failed, leaving state unchanged"; continue; }
+        [ "$code" = "200" ] || { log "delete failed, leaving state unchanged"; failed=1; continue; }
     fi
     code=$(agh add "$domain" "$best_ip")
     if [ "$code" = "200" ]; then
@@ -92,7 +92,8 @@ for domain in $DOMAINS; do
         grep -v "^$domain=" "$STATE_FILE" > "$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"
         echo "$domain=$best_ip" >> "$STATE_FILE"
     else
-        log "FAILED to add rewrite (HTTP $code) - check AGH_URL/USER/PASS"
+        log "FAILED to add rewrite (HTTP $code) - check API authentication"
+        failed=1
         [ -z "$old_ip" ] || agh add "$domain" "$old_ip" >/dev/null
     fi
 done
@@ -121,3 +122,4 @@ if [ "$DRY_RUN" != 1 ] && [ -n "$ROUTER_DNS" ]; then
     log "router static DNS in sync"
 fi
 log "done"
+exit "$failed"
