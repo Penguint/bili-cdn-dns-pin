@@ -139,5 +139,10 @@ class OfficialWorkflow(unittest.TestCase):
             for key in ('BILI_VIDEO_URL','BILI_AUDIO_URL'): env.pop(key)
             restore=subprocess.run(['bash',script,'--restore'],env=env,text=True,capture_output=True)
             self.assertEqual(restore.returncode,0,restore.stderr); self.assertEqual(hosts.read_text(),original)
+            (p/'networksetup').write_text('#!/bin/sh\nexit 1\n')
+            env.update(BILI_VIDEO_URL='https://upos-hz-mirrorakam.akamaized.net/video?test',
+                       BILI_AUDIO_URL='https://upos-hz-mirrorakam.akamaized.net/audio?test')
+            failed=subprocess.run(['bash',script],env=env,text=True,capture_output=True)
+            self.assertNotEqual(failed.returncode,0); self.assertEqual(hosts.read_text(),original)
 
 if __name__=='__main__': unittest.main()

@@ -25,7 +25,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$(id -u)" -ne 0 ] && [ "${BILI_DRY_RUN:-0}" != 1 ]; then
-    echo "Please run with sudo:  sudo bash $0 (or use --dry-run)"
+    echo "Please repeat this command with sudo, or add --dry-run."
     exit 1
 fi
 
